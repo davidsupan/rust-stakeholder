@@ -1,8 +1,5 @@
 use clap::Parser;
-use colored::*;
-use console::Term;
-use rand::prelude::*;
-use rand::rng;
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -14,10 +11,15 @@ use std::{
 
 mod activities;
 mod config;
-mod display;
+#[allow(dead_code)]
+mod domain;
+#[allow(dead_code)]
+mod experimental;
 mod generators;
 mod types;
-use types::{Complexity, DevelopmentType, JargonLevel};
+use config::SessionConfig;
+use domain::EventEnvelope;
+use types::{Complexity, DevelopmentType, JargonLevel, OutputFormat};
 
 /// A CLI tool that generates impressive-looking terminal output when stakeholders walk by
 #[derive(Parser, Debug)]
@@ -58,12 +60,41 @@ struct Args {
     /// Simulate a specific framework usage
     #[arg(short = 'F', long, default_value = "")]
     framework: String,
+
+    /// Seed the scheduler and family selection for deterministic replay
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /// Output mode
+    #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+    output_format: OutputFormat,
+
+    /// Disable ANSI decoration
+    #[arg(long, default_value_t = false)]
+    no_color: bool,
+
+    /// Emit trace events for scheduling decisions
+    #[arg(long, default_value_t = false)]
+    trace: bool,
+
+    /// Print enum values and generator families as JSON, then exit
+    #[arg(long, default_value_t = false)]
+    list_values: bool,
 }
 
 fn main() {
     let args = Args::parse();
 
-    let config = config::SessionConfig {
+    if args.list_values {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&activities::list_values_json())
+                .expect("list-values payload should serialize")
+        );
+        return;
+    }
+
+    let config = SessionConfig {
         dev_type: args.dev_type,
         jargon_level: args.jargon,
         complexity: args.complexity,
@@ -72,21 +103,27 @@ fn main() {
         minimal_output: args.minimal,
         team_activity: args.team,
         framework: args.framework,
+        seed: args.seed,
+        output_format: args.output_format,
+        no_color: args.no_color || std::env::var_os("NO_COLOR").is_some(),
+        trace_enabled: args.trace,
     };
 
     let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
+    let interrupt_flag = running.clone();
 
     ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
+        interrupt_flag.store(false, Ordering::SeqCst);
     })
     .expect("Error setting Ctrl-C handler");
 
-    let term = Term::stdout();
-    let _ = term.clear_screen();
-
-    // Display an initial "system boot" to set the mood
-    display::display_boot_sequence(&config);
+    let mut rng = match config.seed {
+        Some(seed) => StdRng::seed_from_u64(seed),
+        None => {
+            let mut system = rand::rng();
+            StdRng::from_rng(&mut system)
+        }
+    };
 
     let start_time = Instant::now();
     let target_duration = if args.duration > 0 {
@@ -95,6 +132,17 @@ fn main() {
         None
     };
 
+    let mut sequence = 0_u64;
+
+    if matches!(config.output_format, OutputFormat::Json) {
+        sequence += 1;
+        print_event(&config, &activities::boot_event(&config, sequence));
+    } else {
+        for line in activities::intro_lines(&config) {
+            println!("{line}");
+        }
+    }
+
     while running.load(Ordering::SeqCst) {
         if let Some(duration) = target_duration {
             if start_time.elapsed() >= duration {
@@ -102,48 +150,29 @@ fn main() {
             }
         }
 
-        // Based on complexity, determine how many activities to show simultaneously
-        let activities_count = match config.complexity {
-            Complexity::Low => 1,
-            Complexity::Medium => 2,
-            Complexity::High => 3,
-            Complexity::Extreme => 4,
-        };
-
-        // Randomly select and run activities
-        let mut activities: Vec<fn(&config::SessionConfig)> = vec![
-            activities::run_code_analysis,
-            activities::run_performance_metrics,
-            activities::run_system_monitoring,
-            activities::run_data_processing,
-            activities::run_network_activity,
-        ];
-        activities.shuffle(&mut rng());
-
-        for activity in activities.iter().take(activities_count) {
-            activity(&config);
-
-            // Random short pause between activities
-            let pause_time = rng().random_range(100..500);
-            thread::sleep(Duration::from_millis(pause_time));
-
-            // Check if we should exit
-            if !running.load(Ordering::SeqCst)
-                || (target_duration.is_some() && start_time.elapsed() >= target_duration.unwrap())
-            {
-                break;
-            }
+        let events = activities::emit_cycle(&config, &mut rng, &mut sequence);
+        for event in events {
+            print_event(&config, &event);
         }
 
-        if config.alerts_enabled && rng().random_ratio(1, 10) {
-            display::display_random_alert(&config);
-        }
-
-        if config.team_activity && rng().random_ratio(1, 5) {
-            display::display_team_activity(&config);
-        }
+        thread::sleep(Duration::from_millis(rng.random_range(120..280)));
     }
 
-    let _ = term.clear_screen();
-    println!("{}", "Session terminated.".bright_green());
+    sequence += 1;
+    let reason = if running.load(Ordering::SeqCst) {
+        "duration-elapsed"
+    } else {
+        "interrupted"
+    };
+    print_event(&config, &activities::termination_event(sequence, reason));
+}
+
+fn print_event(config: &SessionConfig, event: &EventEnvelope) {
+    match config.output_format {
+        OutputFormat::Text => activities::print_text_event(config, event),
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string(event).expect("event serialization should not fail")
+        ),
+    }
 }

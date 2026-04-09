@@ -10,5 +10,5 @@ pub fn render(
     sequence: u64,
     flavors: &[ScenarioFlavor],
 ) -> EventEnvelope {
-    common::build_event(GeneratorFamily::Metrics, config, sequence, flavors)
+    common::build_event(GeneratorFamily::AgentWorkflows, config, sequence, flavors)
 }

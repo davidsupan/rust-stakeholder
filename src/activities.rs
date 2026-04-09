@@ -1,488 +1,786 @@
 use crate::config::SessionConfig;
-use crate::generators::{
-    code_analyzer, data_processing, jargon, metrics, network_activity, system_monitoring,
+use crate::domain::{
+    ActivityKind, ActivityPlan, ActivitySelection, EventEnvelope, GenerationProvenance,
+    GeneratorFamily, ScenarioFlavor, ALL_GENERATOR_FAMILIES,
 };
-use crate::types::{DevelopmentType, JargonLevel};
-use colored::*;
-use indicatif::{ProgressBar, ProgressStyle};
-use rand::{prelude::*, rng};
-use std::{thread, time::Duration};
+use crate::generators;
+use crate::types::{DevelopmentType, JargonLevel, LanguagePack, SecurityPersona};
+use colored::Colorize;
+use rand::{prelude::IndexedRandom, rngs::StdRng};
+use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 
-pub fn run_code_analysis(config: &SessionConfig) {
-    let files_to_analyze = rng().random_range(5..25);
-    let total_lines = rng().random_range(1000..10000);
+const CLASSIC_FAMILIES: [GeneratorFamily; 5] = [
+    GeneratorFamily::CodeAnalyzer,
+    GeneratorFamily::DataProcessing,
+    GeneratorFamily::Metrics,
+    GeneratorFamily::NetworkActivity,
+    GeneratorFamily::SystemMonitoring,
+];
 
-    let framework_specific = if !config.framework.is_empty() {
-        format!(" ({} specific)", config.framework)
-    } else {
-        String::new()
-    };
+const POLICY_FAMILIES: [GeneratorFamily; 8] = [
+    GeneratorFamily::SupplyChainSecurity,
+    GeneratorFamily::ObservabilityAiRuntime,
+    GeneratorFamily::EvaluationAndGuardrails,
+    GeneratorFamily::IdentityAndTrust,
+    GeneratorFamily::AibomProvenance,
+    GeneratorFamily::AgentBoundarySecurity,
+    GeneratorFamily::DataGovernanceCompliance,
+    GeneratorFamily::FinopsCapacity,
+];
 
-    let title = match config.dev_type {
-        DevelopmentType::Backend => format!(
-            "🔍 Running Code Analysis on API Components{}",
-            framework_specific
+const ALERT_FAMILIES: [GeneratorFamily; 8] = [
+    GeneratorFamily::SupplyChainSecurity,
+    GeneratorFamily::ObservabilityAiRuntime,
+    GeneratorFamily::AgentBoundarySecurity,
+    GeneratorFamily::DeviceTelemetryClinical,
+    GeneratorFamily::OcppChargepointOps,
+    GeneratorFamily::StreamingBusOps,
+    GeneratorFamily::ServiceMeshRpcOps,
+    GeneratorFamily::McpA2aOps,
+];
+
+const TEAM_FAMILIES: [GeneratorFamily; 4] = [
+    GeneratorFamily::AgentWorkflows,
+    GeneratorFamily::PlatformEngineering,
+    GeneratorFamily::DeliveryPreviewOps,
+    GeneratorFamily::ServiceMeshRpcOps,
+];
+
+pub fn intro_lines(config: &SessionConfig) -> Vec<String> {
+    let mut lines = vec![
+        format!("2026+ source-evolution session for {}", config.project_name),
+        format!(
+            "mode={} jargon={:?} complexity={} output={:?}",
+            serde_json::to_string(&config.dev_type)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .replace('"', ""),
+            config.jargon_level,
+            config.complexity.activity_count(),
+            config.output_format,
         ),
-        DevelopmentType::Frontend => format!("🔍 Analyzing UI Components{}", framework_specific),
-        DevelopmentType::Fullstack => "🔍 Analyzing Full-Stack Integration Points".to_string(),
-        DevelopmentType::DataScience => "🔍 Analyzing Data Pipeline Components".to_string(),
-        DevelopmentType::DevOps => "🔍 Analyzing Infrastructure Configuration".to_string(),
-        DevelopmentType::Blockchain => "🔍 Analyzing Smart Contract Security".to_string(),
-        DevelopmentType::MachineLearning => "🔍 Analyzing Model Prediction Accuracy".to_string(),
-        DevelopmentType::SystemsProgramming => "🔍 Analyzing Memory Safety Patterns".to_string(),
-        DevelopmentType::GameDevelopment => "🔍 Analyzing Game Physics Components".to_string(),
-        DevelopmentType::Security => "🔍 Running Security Vulnerability Scan".to_string(),
+    ];
+
+    if let Some(seed) = config.seed {
+        lines.push(format!("seed={seed}"));
+    }
+    if !config.framework.is_empty() {
+        lines.push(format!("framework={}", config.framework));
+    }
+    if config.alerts_enabled {
+        lines.push("alerts=enabled".to_string());
+    }
+    if config.team_activity {
+        lines.push("team=enabled".to_string());
+    }
+
+    lines
+}
+
+pub fn list_values_json() -> serde_json::Value {
+    let families: Vec<_> = ALL_GENERATOR_FAMILIES
+        .iter()
+        .map(|family| family.label())
+        .collect();
+    json!({
+        "devTypes": [
+            "backend",
+            "frontend",
+            "fullstack",
+            "data_science",
+            "dev_ops",
+            "blockchain",
+            "machine_learning",
+            "systems_programming",
+            "game_development",
+            "security"
+        ],
+        "jargonLevels": ["low", "medium", "high", "extreme"],
+        "complexities": ["low", "medium", "high", "extreme"],
+        "outputFormats": ["text", "json"],
+        "flags": [
+            "alerts",
+            "project",
+            "minimal",
+            "team",
+            "framework",
+            "seed",
+            "output-format",
+            "no-color",
+            "trace",
+            "list-values"
+        ],
+        "generatorFamilies": families
+    })
+}
+
+pub fn boot_event(config: &SessionConfig, sequence: u64) -> EventEnvelope {
+    let mut context = BTreeMap::new();
+    context.insert("project".to_string(), config.project_name.clone());
+    context.insert(
+        "devType".to_string(),
+        serde_json::to_string(&config.dev_type)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .replace('"', ""),
+    );
+    if let Some(seed) = config.seed {
+        context.insert("seed".to_string(), seed.to_string());
+    }
+    if !config.framework.is_empty() {
+        context.insert("framework".to_string(), config.framework.clone());
+    }
+
+    EventEnvelope {
+        event_type: "session.start".to_string(),
+        sequence,
+        timestamp: format!("T+{:06}ms", sequence * 137),
+        message: format!(
+            "starting 2026+ source-evolution session for {}",
+            config.project_name
+        ),
+        family: None,
+        protocol: None,
+        schema_ref: None,
+        flavors: vec![],
+        generation_provenance: GenerationProvenance {
+            source_repo: "rust-stakeholder".to_string(),
+            baseline: "2026-plus-source-evolution".to_string(),
+            experimental: false,
+            adapter_type: "static-catalog".to_string(),
+            prompt_version: None,
+        },
+        context,
+    }
+}
+
+pub fn termination_event(sequence: u64, reason: &str) -> EventEnvelope {
+    let mut context = BTreeMap::new();
+    context.insert("reason".to_string(), reason.to_string());
+
+    EventEnvelope {
+        event_type: "session.end".to_string(),
+        sequence,
+        timestamp: format!("T+{:06}ms", sequence * 137),
+        message: format!("session terminated ({reason})"),
+        family: None,
+        protocol: None,
+        schema_ref: None,
+        flavors: vec![],
+        generation_provenance: GenerationProvenance {
+            source_repo: "rust-stakeholder".to_string(),
+            baseline: "2026-plus-source-evolution".to_string(),
+            experimental: false,
+            adapter_type: "static-catalog".to_string(),
+            prompt_version: None,
+        },
+        context,
+    }
+}
+
+pub fn emit_cycle(
+    config: &SessionConfig,
+    rng: &mut StdRng,
+    sequence: &mut u64,
+) -> Vec<EventEnvelope> {
+    let plan = build_activity_plan(config, rng);
+    let mut events = Vec::new();
+
+    for selection in plan.activities {
+        *sequence += 1;
+        events.push(generators::render_activity(
+            selection.family,
+            config,
+            rng,
+            *sequence,
+            &selection.flavors,
+        ));
+
+        if config.trace_enabled {
+            *sequence += 1;
+            events.push(trace_event(*sequence, &selection));
+        }
+    }
+
+    events
+}
+
+pub fn print_text_event(config: &SessionConfig, event: &EventEnvelope) {
+    let base = if let Some(family) = event.family {
+        format!(
+            "[{}] {}",
+            generators::title_for_family(family),
+            event.message
+        )
+    } else {
+        event.message.clone()
     };
 
-    println!(
-        "{}",
-        if config.minimal_output {
-            title.clone()
-        } else {
-            title.bold().bright_blue().to_string()
-        }
-    );
+    if config.minimal_output || config.no_color {
+        println!("{base}");
+        return;
+    }
 
-    let pb = ProgressBar::new(files_to_analyze);
-    pb.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} files ({eta})")
-        .unwrap()
-        .progress_chars("▰▰▱"));
+    let rendered = match event.family {
+        Some(family) if is_health_family(family) => base.bright_green().to_string(),
+        Some(family) if is_quantum_family(family) => base.bright_cyan().to_string(),
+        Some(family) if is_blockchain_family(family) => base.bright_magenta().to_string(),
+        Some(family) if is_security_related(family) => base.bright_red().to_string(),
+        Some(family) if is_protocol_family(family) => base.bright_blue().to_string(),
+        Some(_) => base.bright_white().to_string(),
+        None => base.bold().bright_yellow().to_string(),
+    };
 
-    for i in 0..files_to_analyze {
-        pb.set_position(i);
+    println!("{rendered}");
+}
 
-        if rng().random_ratio(1, 3) {
-            let file_name = code_analyzer::generate_filename(config.dev_type);
-            let issue_type = code_analyzer::generate_code_issue(config.dev_type);
-            let complexity = code_analyzer::generate_complexity_metric();
+fn trace_event(sequence: u64, selection: &ActivitySelection) -> EventEnvelope {
+    let mut context = BTreeMap::new();
+    context.insert("family".to_string(), selection.family.label().to_string());
+    if let Some(protocol) = generators::protocol_for_family(selection.family) {
+        context.insert(
+            "protocolAdapter".to_string(),
+            serde_json::to_string(&protocol)
+                .unwrap_or_else(|_| "\"unknown\"".to_string())
+                .replace('"', ""),
+        );
+    }
 
-            let message = if rng().random_ratio(1, 4) {
-                format!("  ⚠️ {} - {}: {}", file_name, issue_type, complexity)
+    EventEnvelope {
+        event_type: "trace".to_string(),
+        sequence,
+        timestamp: format!("T+{:06}ms", sequence * 137),
+        message: format!(
+            "scheduled {} with {} flavor(s)",
+            selection.family.label(),
+            selection.flavors.len()
+        ),
+        family: Some(selection.family),
+        protocol: generators::protocol_for_family(selection.family),
+        schema_ref: generators::schema_ref_for_family(selection.family),
+        flavors: selection.flavors.clone(),
+        generation_provenance: GenerationProvenance {
+            source_repo: "rust-stakeholder".to_string(),
+            baseline: "2026-plus-source-evolution".to_string(),
+            experimental: false,
+            adapter_type: "trace".to_string(),
+            prompt_version: None,
+        },
+        context,
+    }
+}
+
+fn build_activity_plan(config: &SessionConfig, rng: &mut StdRng) -> ActivityPlan {
+    let target_count = config.complexity.activity_count();
+    let eligible = eligible_families(config);
+    let mut selected: Vec<GeneratorFamily> = Vec::new();
+
+    push_unique_from_pool(&mut selected, &eligible, &CLASSIC_FAMILIES, rng);
+
+    if target_count >= 2 {
+        let modern: Vec<_> = eligible
+            .iter()
+            .copied()
+            .filter(|family| {
+                !CLASSIC_FAMILIES.contains(family) && *family != GeneratorFamily::Jargon
+            })
+            .collect();
+        push_unique_from_vec(&mut selected, &modern, rng);
+    }
+
+    if target_count >= 3 {
+        push_unique_from_pool(&mut selected, &eligible, &POLICY_FAMILIES, rng);
+    }
+
+    while selected.len() < target_count {
+        push_unique_from_vec(&mut selected, &eligible, rng);
+    }
+
+    if config.alerts_enabled {
+        push_unique_from_pool(&mut selected, &eligible, &ALERT_FAMILIES, rng);
+    }
+
+    if config.team_activity {
+        push_unique_from_pool(&mut selected, &eligible, &TEAM_FAMILIES, rng);
+    }
+
+    let activities = selected
+        .into_iter()
+        .map(|family| ActivitySelection {
+            kind: if config.alerts_enabled && ALERT_FAMILIES.contains(&family) {
+                ActivityKind::AlertInjection
+            } else if config.team_activity && TEAM_FAMILIES.contains(&family) {
+                ActivityKind::TeamInjection
             } else {
-                format!("  ✓ {} - {}", file_name, complexity)
-            };
+                ActivityKind::Generator(family)
+            },
+            family,
+            flavors: resolve_flavors(config, family, rng),
+        })
+        .collect();
 
-            pb.println(message);
-        }
-
-        thread::sleep(Duration::from_millis(rng().random_range(100..300)));
-    }
-
-    pb.finish();
-
-    // Final analysis summary
-    let issues_found = rng().random_range(0..5);
-    let code_quality = rng().random_range(85..99);
-    let tech_debt = rng().random_range(1..15);
-
-    println!(
-        "📊 Analysis Complete: {} files, {} lines of code",
-        files_to_analyze, total_lines
-    );
-    println!("  - Issues found: {}", issues_found);
-    println!("  - Code quality score: {}%", code_quality);
-    println!("  - Technical debt: {}%", tech_debt);
-
-    if config.jargon_level >= JargonLevel::Medium {
-        println!(
-            "  - {}",
-            jargon::generate_code_jargon(config.dev_type, config.jargon_level)
-        );
-    }
-
-    println!();
+    ActivityPlan { activities }
 }
 
-pub fn run_performance_metrics(config: &SessionConfig) {
-    let title = match config.dev_type {
-        DevelopmentType::Backend => "⚡ Analyzing API Response Time".to_string(),
-        DevelopmentType::Frontend => "⚡ Measuring UI Rendering Performance".to_string(),
-        DevelopmentType::Fullstack => "⚡ Evaluating End-to-End Performance".to_string(),
-        DevelopmentType::DataScience => "⚡ Benchmarking Data Processing Pipeline".to_string(),
-        DevelopmentType::DevOps => "⚡ Evaluating Infrastructure Scalability".to_string(),
-        DevelopmentType::Blockchain => "⚡ Measuring Transaction Throughput".to_string(),
-        DevelopmentType::MachineLearning => "⚡ Benchmarking Model Training Speed".to_string(),
-        DevelopmentType::SystemsProgramming => {
-            "⚡ Measuring Memory Allocation Efficiency".to_string()
-        }
-        DevelopmentType::GameDevelopment => "⚡ Analyzing Frame Rate Optimization".to_string(),
-        DevelopmentType::Security => "⚡ Benchmarking Encryption Performance".to_string(),
-    };
-
-    println!(
-        "{}",
-        if config.minimal_output {
-            title.clone()
-        } else {
-            title.bold().bright_yellow().to_string()
-        }
-    );
-
-    let iterations = rng().random_range(50..200);
-    let pb = ProgressBar::new(iterations);
-    pb.set_style(ProgressStyle::default_bar()
-        .template("{spinner:.yellow} [{elapsed_precise}] [{bar:40.yellow/blue}] {pos}/{len} samples ({eta})")
-        .unwrap()
-        .progress_chars("▰▱▱"));
-
-    let mut performance_data: Vec<f64> = Vec::new();
-
-    for i in 0..iterations {
-        pb.set_position(i);
-
-        // Generate realistic-looking performance numbers (time in ms)
-        let base_perf = match config.dev_type {
-            DevelopmentType::Backend => rng().random_range(20.0..80.0),
-            DevelopmentType::Frontend => rng().random_range(5.0..30.0),
-            DevelopmentType::DataScience => rng().random_range(100.0..500.0),
-            DevelopmentType::Blockchain => rng().random_range(200.0..800.0),
-            DevelopmentType::MachineLearning => rng().random_range(300.0..900.0),
-            _ => rng().random_range(10.0..100.0),
-        };
-
-        // Add some variation but keep it somewhat consistent
-        let jitter = rng().random_range(-5.0..5.0);
-        let perf_value = f64::max(base_perf + jitter, 1.0);
-        performance_data.push(perf_value);
-
-        if i % 10 == 0 && rng().random_ratio(1, 3) {
-            let metric_name = metrics::generate_performance_metric(config.dev_type);
-            let metric_value = rng().random_range(10..999);
-            let metric_unit = metrics::generate_metric_unit(config.dev_type);
-
-            pb.println(format!(
-                "  📊 {}: {} {}",
-                metric_name, metric_value, metric_unit
-            ));
-        }
-
-        thread::sleep(Duration::from_millis(rng().random_range(50..100)));
+fn eligible_families(config: &SessionConfig) -> Vec<GeneratorFamily> {
+    let mut set = BTreeSet::new();
+    for family in CLASSIC_FAMILIES {
+        set.insert(family);
     }
 
-    pb.finish();
+    match config.dev_type {
+        DevelopmentType::Backend => extend(
+            &mut set,
+            &[
+                GeneratorFamily::AgentWorkflows,
+                GeneratorFamily::AiInferenceOps,
+                GeneratorFamily::PlatformEngineering,
+                GeneratorFamily::SupplyChainSecurity,
+                GeneratorFamily::ObservabilityAiRuntime,
+                GeneratorFamily::DeliveryPreviewOps,
+                GeneratorFamily::EvaluationAndGuardrails,
+                GeneratorFamily::KnowledgeRetrieval,
+                GeneratorFamily::IdentityAndTrust,
+                GeneratorFamily::AibomProvenance,
+                GeneratorFamily::DataGovernanceCompliance,
+                GeneratorFamily::FinopsCapacity,
+                GeneratorFamily::McpA2aOps,
+                GeneratorFamily::StreamingBusOps,
+                GeneratorFamily::ServiceMeshRpcOps,
+            ],
+        ),
+        DevelopmentType::Frontend => extend(
+            &mut set,
+            &[
+                GeneratorFamily::AgentWorkflows,
+                GeneratorFamily::DeliveryPreviewOps,
+                GeneratorFamily::EdgeClientRuntime,
+                GeneratorFamily::ObservabilityAiRuntime,
+                GeneratorFamily::KnowledgeRetrieval,
+                GeneratorFamily::ServiceMeshRpcOps,
+            ],
+        ),
+        DevelopmentType::Fullstack => extend(
+            &mut set,
+            &[
+                GeneratorFamily::AgentWorkflows,
+                GeneratorFamily::AiInferenceOps,
+                GeneratorFamily::PlatformEngineering,
+                GeneratorFamily::ObservabilityAiRuntime,
+                GeneratorFamily::DeliveryPreviewOps,
+                GeneratorFamily::KnowledgeRetrieval,
+                GeneratorFamily::McpA2aOps,
+                GeneratorFamily::StreamingBusOps,
+                GeneratorFamily::ServiceMeshRpcOps,
+                GeneratorFamily::SupplyChainSecurity,
+            ],
+        ),
+        DevelopmentType::DataScience => extend(
+            &mut set,
+            &[
+                GeneratorFamily::AiInferenceOps,
+                GeneratorFamily::KnowledgeRetrieval,
+                GeneratorFamily::EvaluationAndGuardrails,
+                GeneratorFamily::AibomProvenance,
+                GeneratorFamily::DataGovernanceCompliance,
+                GeneratorFamily::ObservabilityAiRuntime,
+            ],
+        ),
+        DevelopmentType::DevOps => extend(
+            &mut set,
+            &[
+                GeneratorFamily::AgentWorkflows,
+                GeneratorFamily::PlatformEngineering,
+                GeneratorFamily::SupplyChainSecurity,
+                GeneratorFamily::ObservabilityAiRuntime,
+                GeneratorFamily::DeliveryPreviewOps,
+                GeneratorFamily::IdentityAndTrust,
+                GeneratorFamily::FinopsCapacity,
+                GeneratorFamily::McpA2aOps,
+                GeneratorFamily::StreamingBusOps,
+                GeneratorFamily::ServiceMeshRpcOps,
+            ],
+        ),
+        DevelopmentType::Blockchain => extend(
+            &mut set,
+            &[
+                GeneratorFamily::BlockchainProtocolOps,
+                GeneratorFamily::CrossChainInterop,
+                GeneratorFamily::ProofAndSequencerOps,
+                GeneratorFamily::SupplyChainSecurity,
+                GeneratorFamily::IdentityAndTrust,
+                GeneratorFamily::McpA2aOps,
+            ],
+        ),
+        DevelopmentType::MachineLearning => extend(
+            &mut set,
+            &[
+                GeneratorFamily::AiInferenceOps,
+                GeneratorFamily::KnowledgeRetrieval,
+                GeneratorFamily::EvaluationAndGuardrails,
+                GeneratorFamily::ObservabilityAiRuntime,
+                GeneratorFamily::AibomProvenance,
+                GeneratorFamily::FinopsCapacity,
+            ],
+        ),
+        DevelopmentType::SystemsProgramming => extend(
+            &mut set,
+            &[
+                GeneratorFamily::ObservabilityAiRuntime,
+                GeneratorFamily::EmbeddedAgenticPipeline,
+                GeneratorFamily::IdentityAndTrust,
+                GeneratorFamily::SupplyChainSecurity,
+                GeneratorFamily::StreamingBusOps,
+            ],
+        ),
+        DevelopmentType::GameDevelopment => extend(
+            &mut set,
+            &[
+                GeneratorFamily::EdgeClientRuntime,
+                GeneratorFamily::DeliveryPreviewOps,
+                GeneratorFamily::ObservabilityAiRuntime,
+                GeneratorFamily::StreamingBusOps,
+                GeneratorFamily::ServiceMeshRpcOps,
+            ],
+        ),
+        DevelopmentType::Security => extend(
+            &mut set,
+            &[
+                GeneratorFamily::AgentWorkflows,
+                GeneratorFamily::SupplyChainSecurity,
+                GeneratorFamily::ObservabilityAiRuntime,
+                GeneratorFamily::EvaluationAndGuardrails,
+                GeneratorFamily::IdentityAndTrust,
+                GeneratorFamily::AibomProvenance,
+                GeneratorFamily::AgentBoundarySecurity,
+                GeneratorFamily::DataGovernanceCompliance,
+                GeneratorFamily::McpA2aOps,
+                GeneratorFamily::StreamingBusOps,
+                GeneratorFamily::ServiceMeshRpcOps,
+            ],
+        ),
+    }
 
-    // Calculate and display metrics
-    performance_data.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let avg = performance_data.iter().sum::<f64>() / performance_data.len() as f64;
-    let median = performance_data[performance_data.len() / 2];
-    let p95 = performance_data[(performance_data.len() as f64 * 0.95) as usize];
-    let p99 = performance_data[(performance_data.len() as f64 * 0.99) as usize];
+    let context_text = format!(
+        "{} {}",
+        config.project_name.to_lowercase(),
+        config.framework.to_lowercase()
+    );
 
-    let unit = match config.dev_type {
-        DevelopmentType::DataScience | DevelopmentType::MachineLearning => "seconds",
-        _ => "milliseconds",
-    };
-
-    println!("📈 Performance Results:");
-    println!("  - Average: {:.2} {}", avg, unit);
-    println!("  - Median: {:.2} {}", median, unit);
-    println!("  - P95: {:.2} {}", p95, unit);
-    println!("  - P99: {:.2} {}", p99, unit);
-
-    // Add optimization recommendations based on dev type
-    let rec = metrics::generate_optimization_recommendation(config.dev_type);
-    println!("💡 Recommendation: {}", rec);
-
-    if config.jargon_level >= JargonLevel::Medium {
-        println!(
-            "  - {}",
-            jargon::generate_performance_jargon(config.dev_type, config.jargon_level)
+    if contains_keyword(
+        &context_text,
+        &[
+            "ehr", "emr", "fhir", "hl7", "openehr", "dicom", "clinical", "patient", "hospital",
+        ],
+    ) {
+        extend(
+            &mut set,
+            &[
+                GeneratorFamily::FhirProfileGenerator,
+                GeneratorFamily::SmartLaunchOauth,
+                GeneratorFamily::BulkFhirPopulationOps,
+                GeneratorFamily::Hl7v2FeedOps,
+                GeneratorFamily::ClinicalWorkflowEvents,
+                GeneratorFamily::DicomwebImagingOps,
+                GeneratorFamily::OpenehrSemanticRecordOps,
+                GeneratorFamily::DeviceTelemetryClinical,
+                GeneratorFamily::EmrVendorAdapter,
+            ],
         );
     }
 
-    println!();
+    if contains_keyword(
+        &context_text,
+        &[
+            "charge", "charger", "charging", "ev", "ocpp", "ocpi", "roaming",
+        ],
+    ) {
+        extend(
+            &mut set,
+            &[
+                GeneratorFamily::OcppChargepointOps,
+                GeneratorFamily::OcpiRoamingOps,
+                GeneratorFamily::StreamingBusOps,
+                GeneratorFamily::ServiceMeshRpcOps,
+            ],
+        );
+    }
+
+    if contains_keyword(
+        &context_text,
+        &[
+            "quantum", "qir", "qasm", "braket", "qiskit", "cudaq", "ionq",
+        ],
+    ) {
+        extend(
+            &mut set,
+            &[
+                GeneratorFamily::HybridRuntimeOps,
+                GeneratorFamily::CapacityCostController,
+                GeneratorFamily::BatchExecutionTuner,
+                GeneratorFamily::CompilerMaintainer,
+                GeneratorFamily::InteropAdapterEngineer,
+                GeneratorFamily::PreflightCapacityPlanner,
+                GeneratorFamily::SimulatorPerformanceEngineer,
+            ],
+        );
+    }
+
+    if contains_keyword(
+        &context_text,
+        &[
+            "mcp",
+            "a2a",
+            "mqtt",
+            "nats",
+            "kafka",
+            "grpc",
+            "graphql",
+            "webtransport",
+        ],
+    ) {
+        extend(
+            &mut set,
+            &[
+                GeneratorFamily::McpA2aOps,
+                GeneratorFamily::StreamingBusOps,
+                GeneratorFamily::ServiceMeshRpcOps,
+            ],
+        );
+    }
+
+    set.into_iter().collect()
 }
 
-pub fn run_system_monitoring(config: &SessionConfig) {
-    let title = "🖥️ System Resource Monitoring".to_string();
-    println!(
-        "{}",
-        if config.minimal_output {
-            title.clone()
-        } else {
-            title.bold().bright_green().to_string()
-        }
-    );
-
-    let duration = rng().random_range(5..15);
-    let pb = ProgressBar::new(duration);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template(
-                "{spinner:.green} [{elapsed_precise}] [{bar:40.green/blue}] {pos}/{len} seconds",
-            )
-            .unwrap()
-            .progress_chars("▰▱▱"),
-    );
-
-    let cpu_base = rng().random_range(10..60);
-    let memory_base = rng().random_range(30..70);
-    let network_base = rng().random_range(1..20);
-    let disk_base = rng().random_range(5..40);
-
-    for i in 0..duration {
-        pb.set_position(i);
-
-        // Generate slightly varied metrics for realistic fluctuation
-        let cpu = cpu_base + rng().random_range(-5..10);
-        let memory = memory_base + rng().random_range(-3..5);
-        let network = network_base + rng().random_range(-1..3);
-        let disk = disk_base + rng().random_range(-2..4);
-
-        let processes = rng().random_range(80..200);
-
-        let cpu_str = if cpu > 80 {
-            format!("{}% (!)", cpu).red().to_string()
-        } else if cpu > 60 {
-            format!("{}% (!)", cpu).yellow().to_string()
-        } else {
-            format!("{}%", cpu).normal().to_string()
-        };
-
-        let mem_str = if memory > 85 {
-            format!("{}%", memory).red().to_string()
-        } else if memory > 70 {
-            format!("{}%", memory).yellow().to_string()
-        } else {
-            format!("{}%", memory).normal().to_string()
-        };
-
-        let stats = format!(
-            "  CPU: {}  |  RAM: {}  |  Network: {} MB/s  |  Disk I/O: {} MB/s  |  Processes: {}",
-            cpu_str, mem_str, network, disk, processes
-        );
-
-        pb.println(if config.minimal_output {
-            stats.clone()
-        } else {
-            stats
-        });
-
-        if i % 3 == 0 && rng().random_ratio(1, 3) {
-            let system_event = system_monitoring::generate_system_event();
-            pb.println(format!("  🔄 {}", system_event));
-        }
-
-        thread::sleep(Duration::from_millis(rng().random_range(200..500)));
-    }
-
-    pb.finish();
-
-    // Display summary
-    println!("📊 Resource Utilization Summary:");
-    println!("  - Peak CPU: {}%", cpu_base + rng().random_range(5..15));
-    println!(
-        "  - Peak Memory: {}%",
-        memory_base + rng().random_range(5..15)
-    );
-    println!(
-        "  - Network Throughput: {} MB/s",
-        network_base + rng().random_range(5..10)
-    );
-    println!(
-        "  - Disk Throughput: {} MB/s",
-        disk_base + rng().random_range(2..8)
-    );
-    println!(
-        "  - {}",
-        system_monitoring::generate_system_recommendation()
-    );
-    println!();
-}
-
-pub fn run_data_processing(config: &SessionConfig) {
-    let operations = rng().random_range(5..20);
-
-    let title = match config.dev_type {
-        DevelopmentType::Backend => "🔄 Processing API Data Streams".to_string(),
-        DevelopmentType::Frontend => "🔄 Processing User Interaction Data".to_string(),
-        DevelopmentType::Fullstack => "🔄 Synchronizing Client-Server Data".to_string(),
-        DevelopmentType::DataScience => "🔄 Running Data Transformation Pipeline".to_string(),
-        DevelopmentType::DevOps => "🔄 Analyzing System Logs".to_string(),
-        DevelopmentType::Blockchain => "🔄 Validating Transaction Blocks".to_string(),
-        DevelopmentType::MachineLearning => "🔄 Processing Training Data Batches".to_string(),
-        DevelopmentType::SystemsProgramming => "🔄 Optimizing Memory Access Patterns".to_string(),
-        DevelopmentType::GameDevelopment => "🔄 Processing Game Asset Pipeline".to_string(),
-        DevelopmentType::Security => "🔄 Analyzing Security Event Logs".to_string(),
-    };
-
-    println!(
-        "{}",
-        if config.minimal_output {
-            title.clone()
-        } else {
-            title.bold().bright_cyan().to_string()
-        }
-    );
-
-    for _ in 0..operations {
-        let operation = data_processing::generate_data_operation(config.dev_type);
-        let records = rng().random_range(100..10000);
-        let size = rng().random_range(1..100);
-        let size_unit = if rng().random_ratio(1, 4) { "GB" } else { "MB" };
-
-        println!(
-            "  🔄 {} {} records ({} {})",
-            operation, records, size, size_unit
-        );
-
-        // Sometimes add sub-tasks with progress bars
-        if rng().random_ratio(1, 3) {
-            let subtasks = rng().random_range(10..30);
-            let pb = ProgressBar::new(subtasks);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template(
-                        "     {spinner:.blue} [{elapsed_precise}] [{bar:30.cyan/blue}] {pos}/{len}",
-                    )
-                    .unwrap()
-                    .progress_chars("▰▱▱"),
-            );
-
-            for i in 0..subtasks {
-                pb.set_position(i);
-                thread::sleep(Duration::from_millis(rng().random_range(20..100)));
-
-                if rng().random_ratio(1, 8) {
-                    let sub_operation =
-                        data_processing::generate_data_sub_operation(config.dev_type);
-                    pb.println(format!("       - {}", sub_operation));
-                }
+fn resolve_flavors(
+    config: &SessionConfig,
+    family: GeneratorFamily,
+    rng: &mut StdRng,
+) -> Vec<ScenarioFlavor> {
+    let mut flavors = Vec::new();
+    if config.dev_type == DevelopmentType::Security || is_security_related(family) {
+        if config.jargon_level >= JargonLevel::High || config.alerts_enabled {
+            let languages = [
+                LanguagePack::English,
+                LanguagePack::Chinese,
+                LanguagePack::Russian,
+                LanguagePack::Spanish,
+                LanguagePack::Arabic,
+            ];
+            if let Some(language) = languages.choose(rng) {
+                flavors.push(ScenarioFlavor::MultilingualSecurity(*language));
             }
-
-            pb.finish_and_clear();
-        } else {
-            thread::sleep(Duration::from_millis(rng().random_range(300..800)));
         }
-
-        // Add some details about the operation
-        if rng().random_ratio(1, 2) {
-            let details = data_processing::generate_data_details(config.dev_type);
-            println!("     ✓ {}", details);
+        if config.jargon_level >= JargonLevel::High {
+            let personas = [
+                SecurityPersona::BugBountyOperator,
+                SecurityPersona::IncidentCommander,
+                SecurityPersona::ReverseEngineer,
+                SecurityPersona::ThreatHunter,
+                SecurityPersona::SocAnalyst,
+                SecurityPersona::DarkMarketWatcher,
+                SecurityPersona::CtiBriefWriter,
+            ];
+            if let Some(persona) = personas.choose(rng) {
+                flavors.push(ScenarioFlavor::SecurityPersona(*persona));
+            }
         }
     }
 
-    // Add a summary
-    let processed_records = rng().random_range(10000..1000000);
-    let processing_rate = rng().random_range(1000..10000);
-    let total_size = rng().random_range(10..500);
-    let time_saved = rng().random_range(10..60);
-
-    println!("📊 Data Processing Summary:");
-    println!("  - Records processed: {}", processed_records);
-    println!("  - Processing rate: {} records/sec", processing_rate);
-    println!("  - Total data size: {} GB", total_size);
-    println!("  - Estimated time saved: {} minutes", time_saved);
-
-    if config.jargon_level >= JargonLevel::Medium {
-        println!(
-            "  - {}",
-            jargon::generate_data_jargon(config.dev_type, config.jargon_level)
-        );
+    if contains_keyword(
+        &format!(
+            "{} {}",
+            config.project_name.to_lowercase(),
+            config.framework.to_lowercase()
+        ),
+        &[
+            "experimental",
+            "openai",
+            "anthropic",
+            "claude",
+            "responses",
+            "llm",
+        ],
+    ) && matches!(
+        family,
+        GeneratorFamily::AiInferenceOps
+            | GeneratorFamily::EvaluationAndGuardrails
+            | GeneratorFamily::AibomProvenance
+    ) {
+        flavors.push(ScenarioFlavor::ExperimentalLiveProvider);
     }
 
-    println!();
+    flavors
 }
 
-pub fn run_network_activity(config: &SessionConfig) {
-    let title = match config.dev_type {
-        DevelopmentType::Backend => "🌐 Monitoring API Network Traffic".to_string(),
-        DevelopmentType::Frontend => "🌐 Analyzing Client-Side Network Requests".to_string(),
-        DevelopmentType::Fullstack => "🌐 Optimizing Client-Server Communication".to_string(),
-        DevelopmentType::DataScience => "🌐 Synchronizing Distributed Data Nodes".to_string(),
-        DevelopmentType::DevOps => "🌐 Monitoring Infrastructure Network".to_string(),
-        DevelopmentType::Blockchain => "🌐 Monitoring Blockchain Network".to_string(),
-        DevelopmentType::MachineLearning => "🌐 Distributing Model Training".to_string(),
-        DevelopmentType::SystemsProgramming => {
-            "🌐 Analyzing Network Protocol Efficiency".to_string()
+fn push_unique_from_pool(
+    selected: &mut Vec<GeneratorFamily>,
+    eligible: &[GeneratorFamily],
+    pool: &[GeneratorFamily],
+    rng: &mut StdRng,
+) {
+    let candidates: Vec<_> = pool
+        .iter()
+        .copied()
+        .filter(|family| eligible.contains(family) && !selected.contains(family))
+        .collect();
+    push_unique_from_vec(selected, &candidates, rng);
+}
+
+fn push_unique_from_vec(
+    selected: &mut Vec<GeneratorFamily>,
+    candidates: &[GeneratorFamily],
+    rng: &mut StdRng,
+) {
+    if let Some(choice) = candidates.choose(rng) {
+        if !selected.contains(choice) {
+            selected.push(*choice);
         }
-        DevelopmentType::GameDevelopment => {
-            "🌐 Simulating Multiplayer Network Conditions".to_string()
+    }
+}
+
+fn extend(target: &mut BTreeSet<GeneratorFamily>, families: &[GeneratorFamily]) {
+    for family in families {
+        target.insert(*family);
+    }
+}
+
+fn contains_keyword(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn is_security_related(family: GeneratorFamily) -> bool {
+    matches!(
+        family,
+        GeneratorFamily::SupplyChainSecurity
+            | GeneratorFamily::AgentBoundarySecurity
+            | GeneratorFamily::IdentityAndTrust
+            | GeneratorFamily::AibomProvenance
+            | GeneratorFamily::DataGovernanceCompliance
+            | GeneratorFamily::McpA2aOps
+            | GeneratorFamily::BlockchainProtocolOps
+            | GeneratorFamily::CrossChainInterop
+            | GeneratorFamily::ProofAndSequencerOps
+    )
+}
+
+fn is_blockchain_family(family: GeneratorFamily) -> bool {
+    matches!(
+        family,
+        GeneratorFamily::BlockchainProtocolOps
+            | GeneratorFamily::CrossChainInterop
+            | GeneratorFamily::ProofAndSequencerOps
+    )
+}
+
+fn is_quantum_family(family: GeneratorFamily) -> bool {
+    matches!(
+        family,
+        GeneratorFamily::HybridRuntimeOps
+            | GeneratorFamily::CapacityCostController
+            | GeneratorFamily::BatchExecutionTuner
+            | GeneratorFamily::CompilerMaintainer
+            | GeneratorFamily::InteropAdapterEngineer
+            | GeneratorFamily::PreflightCapacityPlanner
+            | GeneratorFamily::SimulatorPerformanceEngineer
+    )
+}
+
+fn is_health_family(family: GeneratorFamily) -> bool {
+    matches!(
+        family,
+        GeneratorFamily::FhirProfileGenerator
+            | GeneratorFamily::SmartLaunchOauth
+            | GeneratorFamily::BulkFhirPopulationOps
+            | GeneratorFamily::Hl7v2FeedOps
+            | GeneratorFamily::ClinicalWorkflowEvents
+            | GeneratorFamily::DicomwebImagingOps
+            | GeneratorFamily::OpenehrSemanticRecordOps
+            | GeneratorFamily::DeviceTelemetryClinical
+            | GeneratorFamily::EmrVendorAdapter
+    )
+}
+
+fn is_protocol_family(family: GeneratorFamily) -> bool {
+    matches!(
+        family,
+        GeneratorFamily::OcppChargepointOps
+            | GeneratorFamily::OcpiRoamingOps
+            | GeneratorFamily::McpA2aOps
+            | GeneratorFamily::StreamingBusOps
+            | GeneratorFamily::ServiceMeshRpcOps
+            | GeneratorFamily::NetworkActivity
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Complexity, OutputFormat};
+    use rand::SeedableRng;
+
+    fn test_config() -> SessionConfig {
+        SessionConfig {
+            dev_type: DevelopmentType::Security,
+            jargon_level: JargonLevel::High,
+            complexity: Complexity::Extreme,
+            alerts_enabled: true,
+            project_name: "hospital-ocpp-quantum-control".to_string(),
+            minimal_output: true,
+            team_activity: true,
+            framework: "mcp grpc".to_string(),
+            seed: Some(7),
+            output_format: OutputFormat::Json,
+            no_color: true,
+            trace_enabled: true,
         }
-        DevelopmentType::Security => "🌐 Analyzing Network Security Patterns".to_string(),
-    };
-
-    println!(
-        "{}",
-        if config.minimal_output {
-            title.clone()
-        } else {
-            title.bold().bright_magenta().to_string()
-        }
-    );
-
-    let requests = rng().random_range(5..15);
-
-    for _ in 0..requests {
-        let endpoint = network_activity::generate_endpoint(config.dev_type);
-        let method = network_activity::generate_method();
-        let status = network_activity::generate_status();
-        let size = rng().random_range(1..1000);
-        let time = rng().random_range(10..500);
-
-        let method_colored = match method.as_str() {
-            "GET" => method.green(),
-            "POST" => method.blue(),
-            "PUT" => method.yellow(),
-            "DELETE" => method.red(),
-            _ => method.normal(),
-        };
-
-        let status_colored = if (200..300).contains(&status) {
-            status.to_string().green()
-        } else if (300..400).contains(&status) {
-            status.to_string().yellow()
-        } else {
-            status.to_string().red()
-        };
-
-        let request_line = format!(
-            "  {} {} → {} | {} ms | {} KB",
-            if config.minimal_output {
-                method.to_string()
-            } else {
-                method_colored.to_string()
-            },
-            endpoint,
-            if config.minimal_output {
-                status.to_string()
-            } else {
-                status_colored.to_string()
-            },
-            time,
-            size
-        );
-
-        println!("{}", request_line);
-
-        // Sometimes add request details
-        if rng().random_ratio(1, 3) {
-            let details = network_activity::generate_request_details(config.dev_type);
-            println!("     ↳ {}", details);
-        }
-
-        thread::sleep(Duration::from_millis(rng().random_range(100..400)));
     }
 
-    // Add summary
-    let total_requests = rng().random_range(1000..10000);
-    let avg_response = rng().random_range(50..200);
-    let success_rate = rng().random_range(95..100);
-    let bandwidth = rng().random_range(10..100);
+    #[test]
+    fn plan_is_deterministic_for_the_same_seed() {
+        let config = test_config();
+        let mut rng_a = StdRng::seed_from_u64(41);
+        let mut rng_b = StdRng::seed_from_u64(41);
 
-    println!("📊 Network Activity Summary:");
-    println!("  - Total requests: {}", total_requests);
-    println!("  - Average response time: {} ms", avg_response);
-    println!("  - Success rate: {}%", success_rate);
-    println!("  - Bandwidth utilization: {} MB/s", bandwidth);
+        let plan_a: Vec<_> = build_activity_plan(&config, &mut rng_a)
+            .activities
+            .into_iter()
+            .map(|selection| selection.family)
+            .collect();
+        let plan_b: Vec<_> = build_activity_plan(&config, &mut rng_b)
+            .activities
+            .into_iter()
+            .map(|selection| selection.family)
+            .collect();
 
-    if config.jargon_level >= JargonLevel::Medium {
-        println!(
-            "  - {}",
-            jargon::generate_network_jargon(config.dev_type, config.jargon_level)
-        );
+        assert_eq!(plan_a, plan_b);
     }
 
-    println!();
+    #[test]
+    fn keyword_routing_includes_health_ev_and_quantum_families() {
+        let config = test_config();
+        let eligible = eligible_families(&config);
+
+        assert!(eligible.contains(&GeneratorFamily::FhirProfileGenerator));
+        assert!(eligible.contains(&GeneratorFamily::OcppChargepointOps));
+        assert!(eligible.contains(&GeneratorFamily::HybridRuntimeOps));
+    }
+
+    #[test]
+    fn security_flavors_are_applied_to_security_families() {
+        let config = test_config();
+        let mut rng = StdRng::seed_from_u64(9);
+        let flavors = resolve_flavors(&config, GeneratorFamily::SupplyChainSecurity, &mut rng);
+
+        assert!(!flavors.is_empty());
+        assert!(
+            flavors
+                .iter()
+                .any(|flavor| matches!(flavor, ScenarioFlavor::MultilingualSecurity(_)))
+        );
+        assert!(
+            flavors
+                .iter()
+                .any(|flavor| matches!(flavor, ScenarioFlavor::SecurityPersona(_)))
+        );
+    }
 }
