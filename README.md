@@ -1,3 +1,5 @@
+> [!IMPORTANT]
+> This repository is part of a Codex-assisted rewrite experiment. All changes are manually reviewed, a human remains in the loop, and missing behavior is tracked explicitly rather than hidden. The project exists for fun, research, language learning, AI agent workflow/planning, interop experiments, and code review testing.
 # rust-stakeholder
 
 Satirical CLI output generator, now serving as the 2026+ source baseline for the multi-language `stakeholder` rewrite program.
