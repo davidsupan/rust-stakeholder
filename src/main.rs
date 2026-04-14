@@ -1,6 +1,7 @@
 use clap::Parser;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use std::{
+    process,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -80,10 +81,60 @@ struct Args {
     /// Print enum values and generator families as JSON, then exit
     #[arg(long, default_value_t = false)]
     list_values: bool,
+
+    /// Enable the guarded experimental provider runtime
+    #[arg(long, value_enum)]
+    experimental_provider: Option<experimental::ProviderKind>,
+
+    /// Experimental generation mode
+    #[arg(long, value_enum)]
+    experimental_mode: Option<experimental::ExperimentalGenerationMode>,
+
+    /// Experimental provider profile id
+    #[arg(long)]
+    experimental_profile: Option<String>,
+
+    /// Experimental prompt asset id
+    #[arg(long)]
+    experimental_prompt_asset: Option<String>,
+
+    /// Experimental prompt version
+    #[arg(long)]
+    experimental_prompt_version: Option<String>,
+
+    /// Experimental personalization profile id
+    #[arg(long)]
+    experimental_personalization_profile: Option<String>,
+
+    /// Experimental model override
+    #[arg(long)]
+    experimental_model: Option<String>,
+
+    /// Experimental base URL override
+    #[arg(long)]
+    experimental_base_url: Option<String>,
+
+    /// Consumer-session import file for experimental mode
+    #[arg(long)]
+    experimental_session_file: Option<String>,
+
+    /// Experimental local store path
+    #[arg(long)]
+    experimental_store: Option<String>,
+
+    /// Experimental bootstrap command override
+    #[arg(long)]
+    experimental_bootstrap_command: Option<String>,
+
+    /// Disable experimental cache replay and writes
+    #[arg(long, default_value_t = false)]
+    experimental_disable_cache: bool,
 }
 
 fn main() {
     let args = Args::parse();
+    let experimental = build_experimental_config(&args);
+    let has_orphan_experimental = has_orphan_experimental_args(&args);
 
     if args.list_values {
         println!(
@@ -107,7 +158,29 @@ fn main() {
         output_format: args.output_format,
         no_color: args.no_color || std::env::var_os("NO_COLOR").is_some(),
         trace_enabled: args.trace,
+        experimental,
     };
+
+    if has_orphan_experimental {
+        eprintln!("experimental flags require --experimental-provider");
+        process::exit(2);
+    }
+
+    if config.experimental.is_some() {
+        let mut sequence = 0_u64;
+        match experimental::run(&config, &mut sequence) {
+            Ok(events) => {
+                for event in events {
+                    print_event(&config, &event);
+                }
+            }
+            Err(error) => {
+                eprintln!("experimental runtime error: {error}");
+                process::exit(2);
+            }
+        }
+        return;
+    }
 
     let running = Arc::new(AtomicBool::new(true));
     let interrupt_flag = running.clone();
@@ -175,4 +248,39 @@ fn print_event(config: &SessionConfig, event: &EventEnvelope) {
             serde_json::to_string(event).expect("event serialization should not fail")
         ),
     }
+}
+
+fn build_experimental_config(args: &Args) -> Option<experimental::ExperimentalConfig> {
+    args.experimental_provider
+        .map(|provider| experimental::ExperimentalConfig {
+            provider,
+            mode: args
+                .experimental_mode
+                .unwrap_or(experimental::ExperimentalGenerationMode::PromptVersioned),
+            provider_profile: args.experimental_profile.clone(),
+            prompt_asset: args.experimental_prompt_asset.clone(),
+            prompt_version: args.experimental_prompt_version.clone(),
+            personalization_profile: args.experimental_personalization_profile.clone(),
+            model: args.experimental_model.clone(),
+            base_url: args.experimental_base_url.clone(),
+            session_file: args.experimental_session_file.clone(),
+            bootstrap_command: args.experimental_bootstrap_command.clone(),
+            store_path: args.experimental_store.clone(),
+            disable_cache: args.experimental_disable_cache,
+        })
+}
+
+fn has_orphan_experimental_args(args: &Args) -> bool {
+    args.experimental_provider.is_none()
+        && (args.experimental_mode.is_some()
+            || args.experimental_profile.is_some()
+            || args.experimental_prompt_asset.is_some()
+            || args.experimental_prompt_version.is_some()
+            || args.experimental_personalization_profile.is_some()
+            || args.experimental_model.is_some()
+            || args.experimental_base_url.is_some()
+            || args.experimental_session_file.is_some()
+            || args.experimental_store.is_some()
+            || args.experimental_bootstrap_command.is_some()
+            || args.experimental_disable_cache)
 }

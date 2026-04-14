@@ -1,10 +1,10 @@
-use crate::config::SessionConfig;
 use crate::domain::{
     ActivityKind, ActivityPlan, ActivitySelection, EventEnvelope, GenerationProvenance,
     GeneratorFamily, ScenarioFlavor, ALL_GENERATOR_FAMILIES,
 };
 use crate::generators;
 use crate::types::{DevelopmentType, JargonLevel, LanguagePack, SecurityPersona};
+use crate::{config::SessionConfig, experimental};
 use colored::Colorize;
 use rand::{prelude::IndexedRandom, rngs::StdRng};
 use serde_json::json;
@@ -82,6 +82,7 @@ pub fn list_values_json() -> serde_json::Value {
         .iter()
         .map(|family| family.label())
         .collect();
+    let experimental_catalog = experimental::catalog_json();
     json!({
         "devTypes": [
             "backend",
@@ -108,9 +109,26 @@ pub fn list_values_json() -> serde_json::Value {
             "output-format",
             "no-color",
             "trace",
-            "list-values"
+            "list-values",
+            "experimental-provider",
+            "experimental-mode",
+            "experimental-profile",
+            "experimental-prompt-asset",
+            "experimental-prompt-version",
+            "experimental-personalization-profile",
+            "experimental-model",
+            "experimental-base-url",
+            "experimental-session-file",
+            "experimental-store",
+            "experimental-bootstrap-command",
+            "experimental-disable-cache"
         ],
-        "generatorFamilies": families
+        "generatorFamilies": families,
+        "experimentalProviders": experimental_catalog["providers"].clone(),
+        "experimentalModes": experimental_catalog["modes"].clone(),
+        "promptAssets": experimental_catalog["promptAssets"].clone(),
+        "personalizationProfiles": experimental_catalog["personalizationProfiles"].clone(),
+        "experimentalFlags": experimental_catalog["flags"].clone()
     })
 }
 
@@ -732,6 +750,7 @@ mod tests {
             output_format: OutputFormat::Json,
             no_color: true,
             trace_enabled: true,
+            experimental: None,
         }
     }
 
@@ -772,15 +791,11 @@ mod tests {
         let flavors = resolve_flavors(&config, GeneratorFamily::SupplyChainSecurity, &mut rng);
 
         assert!(!flavors.is_empty());
-        assert!(
-            flavors
-                .iter()
-                .any(|flavor| matches!(flavor, ScenarioFlavor::MultilingualSecurity(_)))
-        );
-        assert!(
-            flavors
-                .iter()
-                .any(|flavor| matches!(flavor, ScenarioFlavor::SecurityPersona(_)))
-        );
+        assert!(flavors
+            .iter()
+            .any(|flavor| matches!(flavor, ScenarioFlavor::MultilingualSecurity(_))));
+        assert!(flavors
+            .iter()
+            .any(|flavor| matches!(flavor, ScenarioFlavor::SecurityPersona(_))));
     }
 }
