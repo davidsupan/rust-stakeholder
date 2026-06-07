@@ -1015,6 +1015,7 @@ fn build_cache_key(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn experimental_event(
     sequence: u64,
     event_type: &str,
