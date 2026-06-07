@@ -1,4 +1,7 @@
-use crate::types::{Complexity, DevelopmentType, JargonLevel, OutputFormat};
+use crate::{
+    experimental::ExperimentalConfig,
+    types::{Complexity, DevelopmentType, JargonLevel, OutputFormat},
+};
 
 pub struct SessionConfig {
     pub dev_type: DevelopmentType,
@@ -13,4 +16,5 @@ pub struct SessionConfig {
     pub output_format: OutputFormat,
     pub no_color: bool,
     pub trace_enabled: bool,
+    pub experimental: Option<ExperimentalConfig>,
 }
