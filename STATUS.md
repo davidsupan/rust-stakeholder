@@ -8,7 +8,7 @@ Last updated: 2026-04-13 CEST
 - Phase completeness: `78%`
 - Program state: `canonical-full-generator-and-live-provider-target`
 - Program completeness: `92%`
-- Default branch: `master`
+- Default branch: `main`
 - Current working branch: `codex/baseline-2026-04-13-rust-stakeholder`
 - Origin: `git@github.com:davidsupan/rust-stakeholder.git`
 - Upstream: `https://github.com/giacomo-b/rust-stakeholder`
