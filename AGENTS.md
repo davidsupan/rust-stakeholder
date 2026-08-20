@@ -1,6 +1,6 @@
 # rust-stakeholder AGENTS
 
-1. Rust remains the canonical source of truth and stays on `master`.
+1. Rust remains the canonical source of truth and stays on `main`.
 2. Do not widen the Rust baseline in a follower wave unless the change is explicitly requested and documented in stakeholder-core.
 3. Commands:
    - `cargo build`
